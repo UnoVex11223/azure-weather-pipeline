@@ -1,1 +1,112 @@
+# Databricks notebook source
+# DBTITLE 1,Libraries
+from pyspark.errors import PySparkException
+from pyspark.sql.functions import col, row_number, to_date, avg, max, min, sum, round, coalesce, lit, current_timestamp
+from pyspark.sql.window import Window
 
+# COMMAND ----------
+
+# DBTITLE 1,Permission Notebook to Access Storage Account
+try:
+    # 1. Get storage key from Key Vault
+    storage_account_name = "weatherpipelinedih"
+    storage_key = dbutils.secrets.get(scope="kv-scope", key="storage-key")
+
+    # 2. Set the Spark configuration
+    spark.conf.set(
+      f"fs.azure.account.key.{storage_account_name}.dfs.core.windows.net",
+      storage_key
+    )
+    
+    # 3. Define container paths
+    silver_path_base = f"abfss://silver@{storage_account_name}.dfs.core.windows.net/"
+    gold_path_base = f"abfss://gold@{storage_account_name}.dfs.core.windows.net/"
+    
+    print("Successfully set up storage access.")
+
+except Exception as e:
+    print(f"Error in setup: {e}")
+    dbutils.notebook.exit("Setup failed.")
+
+# 4. Define table and path names
+silver_table_name = "silver_weather_forecast"
+gold_table_name = "gold_latest_forecast"
+gold_table_path = f"{gold_path_base}latest_forecast"
+
+# COMMAND ----------
+
+# DBTITLE 1,Read Data from Silver
+try:
+    silver_df = spark.read.table(silver_table_name)
+    print(f"Successfully read {silver_df.count()} total rows from {silver_table_name}.")
+    
+except Exception as e:
+    print(f"Error reading table {silver_table_name}: {e}")
+    dbutils.notebook.exit("Failed to read Silver table.")
+
+# COMMAND ----------
+
+# DBTITLE 1,Get Most Recent Forecast
+# 1. Define the window
+window_spec = Window.partitionBy("city_name","forecast_timestamp") \
+                    .orderBy(col("ingestion_timestamp_utc").desc())
+
+# 2. Find the latest row in each group
+latest_forecasts_df = silver_df.withColumn("rn", row_number().over(window_spec))
+
+# 3. Filter to keep the latest forecast
+gold_df = latest_forecasts_df.filter(col("rn") == 1) \
+                             .drop("rn") # Drop the helper column
+
+gold_df = gold_df.filter(col("forecast_timestamp") >= current_timestamp())
+
+display(gold_df)
+
+# COMMAND ----------
+
+# DBTITLE 1,Create Daily Summary Gold Table
+# Add Column that is a more readable date format for users
+daily_df = gold_df.withColumn("forecast_date", to_date(col("forecast_timestamp")))
+
+daily_summary_df = daily_df.groupBy("city_name", "forecast_date") \
+    .agg(
+        round(max("temp_max_farenehit"), 1).alias("daily_high_temp_fahrenheit"),
+        round(min("temp_min_farenehit"), 1).alias("daily_low_temp_fahrenheit"),
+        round(avg("probability_of_precipitation") * 100, 1).alias("avg_probability_of_precipitation_percent"),
+        round(coalesce(sum("rain_volume_last_3h_mm"), lit(0.0)), 2).alias("total_rain_millimeters"),
+        round(coalesce(max("wind_speed_meter_sec"), lit(0.0)), 1).alias("max_wind_speed_meters_per_second")
+    ) \
+    .orderBy("city_name", "forecast_date")
+
+print("Successfully created daily aggregated summary.")
+display(daily_summary_df)
+
+# When Job is ran the table will get overwrited to reflect the new 5 day Forecast along with updated aggreated values
+
+try:
+    (
+        gold_df.write
+        .format("delta")
+        .mode("overwrite")
+        .option("path", gold_table_path) 
+        .option("overwriteSchema", "true")
+        .saveAsTable(gold_table_name)     
+    )
+    print(f"Successfully saved Gold snapshot table: {gold_table_name}")
+
+    gold_agg_table_name = "gold_daily_summary"
+    gold_agg_table_path = f"{gold_path_base}daily_summary"
+
+    (
+        daily_summary_df.write
+        .format("delta")
+        .mode("overwrite")
+        .option("path", gold_agg_table_path) 
+        .option("overwriteSchema", "true")
+        .saveAsTable(gold_agg_table_name)    
+    )
+    print(f"Successfully saved Gold aggregated table: {gold_agg_table_name}")
+
+except Exception as e:
+    print(f"Failed to save Gold tables")
+    print(f"Error details: {e}")
