@@ -32,7 +32,7 @@ This project is an automated weather data pipeline built on **Azure**. It ingest
 
 ## 📚 Resources
 
-- **Bronze → Silver Notebook:** [`NB_Bronze_to_Silver_Weather`](notebooks/NB_Bronze_to_Silver_Weather.md)  
-- **Silver → Gold Notebook:** [`NB_Silver_to_Gold_Weather`](notebooks/NB_Silver_to_Gold_Weather.md)  
-- **Full Documentation:** [`documentation.md`](documentation.md)
+- **Bronze → Silver Notebook:** [`NB_Bronze_to_Silver_Weather`](notebooks/NB_Bronze_to_Silver_Weather)  
+- **Silver → Gold Notebook:** [`NB_Silver_to_Gold_Weather`](notebooks/NB_Silver_to_Gold_Weather)  
+- **Full Documentation:** [`documentation.md`](documentation)
 
