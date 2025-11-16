@@ -26,13 +26,13 @@ This project is an automated weather data pipeline built on **Azure**. It ingest
 
 ## 📊 ADF Pipeline
 
-![ADF Pipeline](path/to/your-adf-pipeline-image.png)
+![ADF Pipeline](C:\Users\ijhug\Desktop\Weather Pipeline)
 
 ---
 
 ## 📚 Resources
 
-- **Bronze → Silver Notebook:** [`NB_Bronze_to_Silver_Weather.py`](NB_Bronze_to_Silver_Weather.py)  
-- **Silver → Gold Notebook:** [`NB_Silver_to_Gold_Weather.py`](NB_Silver_to_Gold_Weather.py)  
-- **Full Documentation:** [`PROJECT_DOCUMENTATION.md`](PROJECT_DOCUMENTATION.md)
+- **Bronze → Silver Notebook:** [`NB_Bronze_to_Silver_Weather`](notebooks/NB_Bronze_to_Silver_Weather.md)  
+- **Silver → Gold Notebook:** [`NB_Silver_to_Gold_Weather`](notebooks/NB_Silver_to_Gold_Weather.md)  
+- **Full Documentation:** [`documentation.md`](documentation.md)
 
