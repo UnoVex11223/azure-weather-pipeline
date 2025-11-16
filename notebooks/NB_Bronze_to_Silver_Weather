@@ -1,1 +1,272 @@
+# Databricks notebook source
+# DBTITLE 1,Import Libraries/Modules
+from pyspark.errors import PySparkException
+from pyspark.sql.functions import explode, col, lit, current_timestamp, to_timestamp, round
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType, ArrayType
+from delta.tables import DeltaTable
 
+# COMMAND ----------
+
+# DBTITLE 1,Functions
+def kelvin_to_fahrenheit(column):
+    """
+    Takes a PySpark Column object (with Kelvin temps) and 
+    returns a new Column object (with Fahrenheit temps, rounded).
+    """
+    celsius = column - 273.15
+    fahrenheit = (celsius * 9/5) + 32
+    return round(fahrenheit, 2)
+
+# COMMAND ----------
+
+# DBTITLE 1,Permission Notebook to Access Storage Account
+
+try:
+  # Grab the secret from Key Vault and Scope from Databricks
+  storage_key = dbutils.secrets.get(scope="kv-scope", key="storage-key")
+
+  # Set the configuration so notebook has access to my storage account
+  spark.conf.set(
+  "fs.azure.account.key.weatherpipelinedih.dfs.core.windows.net",
+  storage_key
+  )
+
+  print("Successfully set up storage access.")
+
+
+except PySparkException as e:
+  print(f"A Spark error occurred: {e}")
+
+except Exception as e:
+  print(f"An unexpected error occurred: {e}")
+
+
+# Container paths
+bronze = "abfss://bronze@weatherpipelinedih.dfs.core.windows.net/"
+silver = "abfss://silver@weatherpipelinedih.dfs.core.windows.net/"
+
+print(f"Bronze path: {bronze}")
+print(f"Silver path: {silver}")
+
+# COMMAND ----------
+
+# DBTITLE 1,Define Schema of JSON Files
+weather_item_struct = StructType([
+    StructField("id", IntegerType(), True),
+    StructField("main", StringType(), True),
+    StructField("description", StringType(), True),
+    StructField("icon", StringType(), True)
+])
+
+main_struct = StructType([
+    StructField("temp", DoubleType(), True),
+    StructField("feels_like", DoubleType(), True),
+    StructField("temp_min", DoubleType(), True),
+    StructField("temp_max", DoubleType(), True),
+    StructField("pressure", IntegerType(), True),
+    StructField("sea_level", IntegerType(), True),
+    StructField("grnd_level", IntegerType(), True),
+    StructField("humidity", IntegerType(), True),
+    StructField("temp_kf", DoubleType(), True)
+])
+
+clouds_struct = StructType([
+    StructField("all", IntegerType(), True)
+])
+
+wind_struct = StructType([
+    StructField("speed", DoubleType(), True),
+    StructField("deg", IntegerType(), True),
+    StructField("gust", DoubleType(), True)
+])
+
+rain_struct = StructType([
+    StructField("3h", DoubleType(), True)
+])
+
+snow_struct = StructType([
+    StructField("3h", DoubleType(), True)
+])
+
+sys_struct = StructType([
+    StructField("pod", StringType(), True)
+])
+
+coord_struct = StructType([
+    StructField("lat", DoubleType(), True),
+    StructField("lon", DoubleType(), True)
+])
+
+list_item_struct = StructType([
+    StructField("dt", IntegerType(), True),
+    StructField("main", main_struct, True),
+    StructField("weather", ArrayType(weather_item_struct), True),
+    StructField("clouds", clouds_struct, True),
+    StructField("wind", wind_struct, True),
+    StructField("visibility", IntegerType(), True),
+    StructField("pop", DoubleType(), True),
+    StructField("rain", rain_struct, True),
+    StructField("snow", snow_struct, True),
+    StructField("sys", sys_struct, True),
+    StructField("dt_txt", StringType(), True)
+])
+
+city_struct = StructType([
+    StructField("id", IntegerType(), True),
+    StructField("name", StringType(), True),
+    StructField("coord", coord_struct, True),
+    StructField("country", StringType(), True),
+    StructField("population", IntegerType(), True),
+    StructField("timezone", IntegerType(), True),
+    StructField("sunrise", IntegerType(), True),
+    StructField("sunset", IntegerType(), True)
+])
+
+
+# Combination of the smaller schemas to represent the structure of entire JSON file
+weather_schema = StructType([
+    StructField("cod", StringType(), True),
+    StructField("message", IntegerType(), True),
+    StructField("cnt", IntegerType(), True),
+    StructField("list", ArrayType(list_item_struct), True),
+    StructField("city", city_struct, True)
+])
+
+
+print("Schema Defined Successfully!")
+
+# COMMAND ----------
+
+# DBTITLE 1,Get Most Recent File & Convert to Tabular Format
+try:
+    # 1. List all files in the bronze path
+    all_files = dbutils.fs.ls(bronze)
+
+    # 2. Check if the directory is empty
+    if not all_files:
+        print("No files found in bronze. Exiting notebook.")
+        dbutils.notebook.exit("No files to process.")
+
+    # 3. This sorts all the files in the bronze container and orders the modificationTime in DESC order and grabs the top file
+    latest_file = sorted(all_files, key=lambda x: x.modificationTime, reverse=True)[0]
+    
+    print(f"Processing file: {latest_file.path}")
+
+    # 4. Read, explode, and flatten the JSON file
+    bronze_df = spark.read.format("json") \
+        .schema(weather_schema) \
+        .load(latest_file.path) \
+        .select(col("city"), explode(col("list")).alias("forecast")) \
+        .select(
+            # City fields
+            col("city.name").alias("city_name"),
+            col("city.country").alias("country"),
+            col("city.coord.lat").alias("latitude"),
+            col("city.coord.lon").alias("longitude"),
+            
+            # Forecast fields
+            col("forecast.dt_txt").alias("forecast_timestamp_txt"),
+            col("forecast.pop").alias("probability_of_precipitation"),
+            
+            # Main weather fields
+            col("forecast.main.temp").alias("temp_kelvin"),
+            col("forecast.main.feels_like").alias("feels_like_kelvin"),
+            col("forecast.main.temp_min").alias("temp_min_kelvin"),
+            col("forecast.main.temp_max").alias("temp_max_kelvin"),
+            col("forecast.main.pressure").alias("pressure_hpa"),
+            col("forecast.main.humidity").alias("humidity_percent"),
+            
+            # Wind fields
+            col("forecast.wind.speed").alias("wind_speed_meter_sec"),
+            col("forecast.wind.gust").alias("wind_gust_meter_sec"),
+            col("forecast.wind.deg").alias("wind_direction_deg"),
+            
+            # Weather description (using the safer 'getItem' method)
+            col("forecast.weather").getItem(0).description.alias("weather_description"),
+            
+            # Rain/Snow fields
+            col("forecast.rain.3h").alias("rain_volume_last_3h_mm"),
+            col("forecast.snow.3h").alias("snow_volume_last_3h_mm")
+        )
+
+    display(bronze_df)
+
+except PySparkException as e:
+    print(f"A Spark error occurred while processing the file: {e}")
+except Exception as e:
+    print(f"An unexpected error occurred: {e}")
+
+# COMMAND ----------
+
+# DBTITLE 1,Transform Columns and Select Columns that are wanted on Silver Table
+silver_df = bronze_df.withColumn("ingestion_timestamp_utc", current_timestamp()) \
+    .withColumn("forecast_timestamp", to_timestamp(col("forecast_timestamp_txt"), "yyyy-MM-dd HH:mm:ss")) \
+    .withColumn("temp_farenehit", kelvin_to_fahrenheit(col("temp_kelvin"))) \
+    .withColumn("feels_like_farenheit", kelvin_to_fahrenheit(col("feels_like_kelvin"))) \
+    .withColumn("temp_min_farenehit", kelvin_to_fahrenheit(col("temp_min_kelvin"))) \
+    .withColumn("temp_max_farenehit", kelvin_to_fahrenheit(col("temp_max_kelvin")))
+
+final_silver_df = silver_df.select(
+    "city_name",
+    "country",
+    "latitude",
+    "longitude",
+    "ingestion_timestamp_utc",  
+    "forecast_timestamp",       
+    "probability_of_precipitation",
+    "temp_farenehit",                   
+    "feels_like_farenheit",                   
+    "temp_min_farenehit",             
+    "temp_max_farenehit",             
+    "pressure_hpa",
+    "humidity_percent",
+    "wind_speed_meter_sec",
+    "wind_gust_meter_sec",
+    "wind_direction_deg",
+    "weather_description",
+    "rain_volume_last_3h_mm",
+    "snow_volume_last_3h_mm"
+    # We "dropped" the old columns by simply not including them in the select
+)
+
+
+display(final_silver_df)
+
+# COMMAND ----------
+
+# DBTITLE 1,Take Finalized Data Frame And Merge Records Into Table
+try:
+    silver_path = f"{silver}weather_forecast"
+    table_name = "silver_weather_forecast"
+
+    # Checks to see if table is created if not it will created new table. If it is already created it will APPEND the new data
+    if not spark.catalog.tableExists(table_name):
+        print(f"Table '{table_name}' not found. Creating new table.")
+        (
+            final_silver_df.write
+            .format("delta")
+            .option("path", silver_path)
+            .option("overwriteSchema", "true") 
+            .saveAsTable(table_name)
+        )
+        print(f"Successfully created and registered table: {table_name}")
+    else:
+        print(f"Table '{table_name}' found. Appending new data...")
+        (
+            final_silver_df.write
+            .format("delta")
+            .mode("append")  
+            .save(silver_path) 
+        )
+        
+        print(f"Successfully appended {final_silver_df.count()} new rows.")
+
+except PySparkException as e:
+    print(f"A PySpark error occurred while saving/appending table '{table_name}' ---")
+    print(f"Path: {silver_path}")
+    print("Please check storage account permissions and the path.")
+    print(f"Error details: {e}")
+    
+except Exception as e:
+    print(f"ERROR: An unexpected error occurred while saving/appending table '{table_name}'")
+    print(f"Error details: {e}")
