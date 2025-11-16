@@ -26,7 +26,7 @@ This project is an automated weather data pipeline built on **Azure**. It ingest
 
 ## 📊 ADF Pipeline
 
-![Weather Pipeline](Weather Pipeline.png)
+![Weather Pipeline](Pipeline)
 
 ---
 
